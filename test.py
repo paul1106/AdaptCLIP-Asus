@@ -1,9 +1,9 @@
 """Testing script for AdaptCLIP anomaly detection model."""
 
 import argparse
-import pickle
 import random
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -15,6 +15,7 @@ from tqdm import tqdm
 import adaptcliplib
 from adaptcliplib import PQAdapter, TextualAdapter, VisualAdapter, fusion_fun
 from dataset import Dataset, PromptDataset
+from eval_toolkit import PredictionSaver
 from tools import Evaluator, get_logger, get_transform, setup_seed, visualizer
 
 
@@ -106,8 +107,14 @@ def test(args):
     eval_metrics =  args.eval_metrics
     mode = 'test'
 
-    log_file = f'{dataset_name}_{seed}seed_{k_shots}shot_{mode}_log.txt'
+    log_file = f'{seed}seed_{k_shots}shot_{mode}_log.txt'
     logger = get_logger(save_path, log_file)
+
+    # ====================== Prediction saving setup ======================
+    if args.save_predictions:
+        pred_dir = Path(save_path) / f'{seed}seed_{k_shots}shot_predictions'
+        saver = PredictionSaver(pred_dir)
+        logger.info(f'Saving predictions to {pred_dir}')
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if args.pretrained_model == 'ViT-L/14@336px':
@@ -124,19 +131,22 @@ def test(args):
         DPAM_layer = 10
 
     preprocess, target_transform = get_transform(image_size=args.image_size)
+    meta_path = args.meta_json if args.meta_json else None
     if dataset_name in ['Real-IAD-Variety', 'RealIAD']:
         sample_level = True
         prompt_data = PromptDataset(root=dataset_dir, transform=preprocess, target_transform=target_transform, \
                                     dataset_name=dataset_name, k_shots=k_shots, save_dir=save_path, mode=mode, \
-                                    seed=seed, class_name=args.class_name)
+                                    seed=seed, class_name=args.class_name, meta_path=meta_path)
         test_data = Dataset(root=dataset_dir, transform=preprocess, target_transform=target_transform, \
                             dataset_name=dataset_name, k_shots=k_shots, save_dir=save_path, mode=mode, \
-                            seed=seed, class_name=args.class_name)
+                            seed=seed, class_name=args.class_name, meta_path=meta_path)
     else:
         prompt_data = PromptDataset(root=dataset_dir, transform=preprocess, target_transform=target_transform, \
-                                    dataset_name=dataset_name, k_shots=k_shots, save_dir=save_path, mode=mode, seed=seed)
+                                    dataset_name=dataset_name, k_shots=k_shots, save_dir=save_path, mode=mode, \
+                                    seed=seed, meta_path=meta_path)
         test_data = Dataset(root=dataset_dir, transform=preprocess, target_transform=target_transform, \
-                            dataset_name=dataset_name, k_shots=k_shots, save_dir=save_path, mode=mode, seed=seed)
+                            dataset_name=dataset_name, k_shots=k_shots, save_dir=save_path, mode=mode, \
+                            seed=seed, meta_path=meta_path)
         sample_level = False
     prompt_dataloader = torch.utils.data.DataLoader(prompt_data, batch_size=batch_size, shuffle=False)
     test_dataloader = torch.utils.data.DataLoader(test_data, batch_size=batch_size, shuffle=False, num_workers=4)
@@ -312,22 +322,36 @@ def test(args):
         pixel_anomaly_map  = torch.nan_to_num(pixel_anomaly_map,  nan=0.0, posinf=0.0, neginf=0.0)
         image_anomaly_pred = torch.nan_to_num(image_anomaly_pred, nan=0.0, posinf=0.0, neginf=0.0)
 
-        sample_ids.append(np.array(sample_id))
-        cls_names.append(np.array(cls_name))
-        query_paths.append(np.array(query_path))
-        if cpu_eva:
-            gt_masks.append(gt_mask.int().cpu())
-            pr_masks.append(pixel_anomaly_map.cpu())
-
-            gt_anomalys.append(gt_anomaly.int().cpu())
-            pr_anomalys.append(image_anomaly_pred.cpu())
+        if args.save_predictions:
+            saver.save_batch(
+                pixel_maps  = pixel_anomaly_map,
+                scores      = image_anomaly_pred,
+                gt_masks    = gt_mask.int(),
+                gt_labels   = gt_anomaly.int(),
+                cls_names   = cls_name,
+                img_paths   = query_path,
+                sample_ids  = sample_id,
+            )
         else:
-            gt_masks.append(gt_mask.int())
-            pr_masks.append(pixel_anomaly_map)
+            sample_ids.append(np.array(sample_id))
+            cls_names.append(np.array(cls_name))
+            query_paths.append(np.array(query_path))
+            if cpu_eva:
+                gt_masks.append(gt_mask.int().cpu())
+                pr_masks.append(pixel_anomaly_map.cpu())
+                gt_anomalys.append(gt_anomaly.int().cpu())
+                pr_anomalys.append(image_anomaly_pred.cpu())
+            else:
+                gt_masks.append(gt_mask.int())
+                pr_masks.append(pixel_anomaly_map)
+                gt_anomalys.append(gt_anomaly.int())
+                pr_anomalys.append(image_anomaly_pred)
 
-
-            gt_anomalys.append(gt_anomaly.int())
-            pr_anomalys.append(image_anomaly_pred)
+    # ====================== Save predictions and exit ======================
+    if args.save_predictions:
+        manifest_path = saver.close()
+        logger.info(f'Saved {saver.count} predictions → {manifest_path}')
+        return
 
     # ====================== Evaluation ======================
     results_eval = dict(sample_ids=sample_ids, gt_masks=gt_masks, pr_masks=pr_masks, cls_names=cls_names, gt_anomalys=gt_anomalys, pr_anomalys=pr_anomalys, query_paths=query_paths)
@@ -383,6 +407,10 @@ if __name__ == '__main__':
     parser.add_argument("--pq_mid_dim", type=int, default=128, help="the number of the first hidden layer in pqadapter")
     parser.add_argument("--pq_context", action="store_true", help="Enable context feature")
     parser.add_argument("--class_name", type=str, help="class name for a special dataset, for example, bottle in MVTec")
+    parser.add_argument("--save-predictions", action="store_true",
+                        help="Save pixel maps and manifest to disk; skip metric computation")
+    parser.add_argument("--meta-json", type=str, default=None,
+                        help="Path to meta.json (default: <test_data_path>/meta.json)")
     args = parser.parse_args()
     print(args)
     setup_seed(args.seed)

@@ -86,7 +86,7 @@ def generate_class_info(dataset_name):
 
 
 class Dataset(data.Dataset):
-    def __init__(self, root, transform, target_transform, dataset_name, k_shots, save_dir, mode='train', seed=10, class_name=None):
+    def __init__(self, root, transform, target_transform, dataset_name, k_shots, save_dir, mode='train', seed=10, class_name=None, meta_path=None):
         self.root = root
         self.transform = transform
         self.target_transform = target_transform
@@ -94,7 +94,8 @@ class Dataset(data.Dataset):
         self.mode = mode
         self.save_dir = save_dir
 
-        meta_info_json = json.load(open(f'{self.root}/meta.json', 'r'))
+        meta_file = meta_path if meta_path is not None else f'{self.root}/meta.json'
+        meta_info_json = json.load(open(meta_file, 'r'))
         meta_test_info = meta_info_json['test']
         meta_train_info = meta_info_json['train']
 
@@ -185,7 +186,7 @@ class Dataset(data.Dataset):
 
 
 class PromptDataset(data.Dataset):
-    def __init__(self, root, transform, target_transform, dataset_name, k_shots, save_dir, mode='test', seed=10, class_name=None):
+    def __init__(self, root, transform, target_transform, dataset_name, k_shots, save_dir, mode='test', seed=10, class_name=None, meta_path=None):
         self.root = root
         self.transform = transform
         self.target_transform = target_transform
@@ -203,7 +204,8 @@ class PromptDataset(data.Dataset):
 
         self.prompt_data_all = []
 
-        meta_info_json = json.load(open(f'{self.root}/meta.json', 'r'))
+        meta_file = meta_path if meta_path is not None else f'{self.root}/meta.json'
+        meta_info_json = json.load(open(meta_file, 'r'))
         if meta_info_json['train']:
             meta_train_info = meta_info_json['train']
         else:

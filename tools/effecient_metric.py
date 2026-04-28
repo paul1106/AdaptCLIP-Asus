@@ -5,7 +5,7 @@ from collections import defaultdict
 import torch
 from torch.nn import functional as F
 
-from metrics import AUPR, AUPRO, AUROC, F1Max, OverkillEscape
+from eval_toolkit.metrics import AUPR, AUPRO, AUROC, F1Max, OverkillEscape
 
 
 class Evaluator:
@@ -17,6 +17,7 @@ class Evaluator:
     """
 
     def __init__(self, device, metrics=None, sample_level=False):
+        self.device = torch.device(device)
         if metrics is None or len(metrics) == 0:
             self.metrics = [
                 'I-AUROC', 'I-AP', 'I-F1max',
@@ -51,6 +52,11 @@ class Evaluator:
 
         gt_sp = results['gt_anomalys'][idxes]
         pr_sp = results['pr_anomalys'][idxes]
+
+        gt_px = gt_px.to(self.device)
+        pr_px = pr_px.to(self.device)
+        gt_sp = gt_sp.to(self.device)
+        pr_sp = pr_sp.to(self.device)
 
         # --- compute sample-level results ---
         if self.sample_level:
